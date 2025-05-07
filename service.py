@@ -41,6 +41,7 @@ def generate_image_openai(prompt: str):
     else:
         raise HTTPException(status_code=response.status_code, detail=response.json())
 
+# Generate image using Hugging Face FLUX.1 model
 def generate_image_flux(prompt: str):
     headers = {
         "Authorization": f"Bearer {API_TOKEN}",
@@ -58,13 +59,17 @@ def generate_image_flux(prompt: str):
     }
 
     response = requests.post(
-        f"https://api-inference.huggingface.co/models/{MODEL_ID}", 
-        headers=headers, 
+        f"https://api-inference.huggingface.co/models/{HF_MODEL_ID}",
+        headers=headers,
         json=data
     )
 
-    if response.status_code == 200:
-        image_data = response.content
-        return image_data
-    else:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+    if response.ok:
+        image_path = "generated_image_flux.png"
+        with open(image_path, "wb") as f:
+            f.write(response.content)
+
+        return {"image_url": image_path}
+
+    raise HTTPException(status_code=response.status_code, detail=response.text)
+ 
