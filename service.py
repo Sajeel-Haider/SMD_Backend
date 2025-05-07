@@ -12,7 +12,7 @@ API_KEY = os.getenv("OPENAI_API_KEY")
 API_TOKEN = os.getenv("HF_API_TOKEN")
 
 # Hugging Face FLUX MODEL ID
-MODEL_ID = "black-forest-labs/FLUX.1-dev"
+HF_MODEL_ID = "black-forest-labs/FLUX.1-dev"
 
 def get_image_generation_prompt(response: dict) -> str:
     return response.get('image_generation_prompt', '')
