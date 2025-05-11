@@ -1,127 +1,135 @@
-import os
-import tempfile
- 
-import requests
+import os, requests, json
 from fastapi import HTTPException
 from dotenv import load_dotenv
-
 import google.generativeai as genai
-import os
-import json
-import shutil
 
- 
 load_dotenv()
 
+PI_API_KEY      = os.getenv("PI_API_KEY")
+GOOGLE_API_KEY  = os.getenv("GEMINI_API")
+MODEL_NAME      = "Qubico/flux1-schnell"
 
- 
-API_KEY = os.getenv("OPENAI_API_KEY")
-API_TOKEN = os.getenv("HF_API_TOKEN")
-GOOGLE_API_KEY = os.getenv("GEMINI_API")
 genai.configure(api_key=GOOGLE_API_KEY)
-# Hugging Face FLUX MODEL ID
-HF_MODEL_ID = "black-forest-labs/FLUX.1-dev"
-model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+gemini = genai.GenerativeModel(model_name="gemini-2.0-flash")
 
-def split_prompt(prompt: str):
+# ─── Add just below the existing imports / Gemini setup ───────────────────────
+def enhance_prompt(
+    prompt: str,
+    style: str | None = None,
+    max_words: int = 30,
+) -> dict:
+    base_instruction = (
+        "Rewrite the following image prompt so that it is vivid, "
+        "specific, and richly descriptive. Keep it under "
+        f"{max_words} words."
+    )
+    if style:
+        base_instruction += f" Make sure the rewrite clearly evokes a {style} style."
+
     instruction = (
-    f"The user wants to create a short video from a sequence of 4 images. Based on their overall video idea below, generate 4 distinct sub-prompts. "
-    f"Each sub-prompt should describe a scene for one image in the sequence. The scenes should flow logically to create a mini-narrative or show clear progression. "
-    f"Consider how elements like character, setting, and mood might carry through or evolve across the sequence to ensure visual coherence in the final video.\n\n"
-    f"User's Video Idea: \"{prompt}\"\n\n"
-    f"Return the result as JSON in the following format:\n"
-    f'{{"subprompts": ["...", "...", "...", "..."]}}'
-)
-
-    try:
-        response = model.generate_content(instruction)
-        text = response.text
- 
-        start = text.find('{')
-        end = text.rfind('}') + 1
-        json_str = text[start:end]
-
-        return json.loads(json_str)
-
-    except Exception as e:
-        return {"error": str(e)}
-
- 
-
-def generate_image_flux(prompt: str):
-    headers = {
-        "Authorization": f"Bearer {API_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "inputs": prompt,
-        "parameters": {
-            "height": 1024,
-            "width": 1024,
-            "guidance_scale": 7.5,
-            "num_inference_steps": 50
-        }
-    }
-
-    response = requests.post(
-        f"https://api-inference.huggingface.co/models/{HF_MODEL_ID}",
-        headers=headers,
-        json=data
+        f"{base_instruction}\n\n"
+        f"Original prompt: \"{prompt}\"\n\n"
+        f"Enhanced:"
     )
 
-    if response.ok:
-        image_path = "generated_image_flux.png"
-        with open(image_path, "wb") as f:
-            f.write(response.content)
-
-        return {"image_url": image_path}
-
-    raise HTTPException(status_code=response.status_code, detail=response.text)
-def generate_video_flux(prompt: str):
-    print("Calling split_prompt...")
-    split_res = split_prompt(prompt)
-    subprompts = split_res.get("subprompts", [])
-    print(f"Successfully split into {len(subprompts)} sub-prompts.")
-
-    temp_dir = None
     try:
-        temp_dir = tempfile.mkdtemp(prefix="video_images_")
-        print(f"Created temporary directory: {temp_dir}")
+        resp = gemini.generate_content(instruction)
+        enhanced = resp.text.strip().strip('"\'')
+
+        # Gemini can sometimes return an empty string on rare failures
+        if not enhanced:
+            enhanced = f"{prompt}, {style} style" if style else prompt
+
+        return {"enhanced_prompt": enhanced}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create temporary directory: {e}")
+        # Surface LLM error in HTTPException so FastAPI returns 500
+        raise HTTPException(status_code=500, detail=f"Gemini error: {e}")
 
-    generated_image_paths = []
-    temp_flux_output_name = "generated_image_flux.png"
-    print("Starting image generation for sub-prompts...")
+# ─────────────────────────────────── helpers ───────────────────────────────────
+def _enhance_prompt(prompt: str, style: str | None) -> str:
+    """Return the prompt rewritten in *style* (falls back to simple concat)."""
+    if not style:
+        return prompt
 
-    for i, subprompt in enumerate(subprompts):
-        scene_number = i + 1
-        print(f"Generating image {scene_number}/4 for prompt: '{subprompt}'")
-        try:
-            image_gen_result = generate_image_flux(subprompt)
+    instruction = (
+        f"Rewrite the following image prompt so it clearly evokes a {style} style. "
+        f"Keep it under 60 words.\nPrompt: \"{prompt}\"\nEnhanced:"
+    )
+    try:
+        resp = gemini.generate_content(instruction)
+        enhanced = resp.text.strip().strip('"\'')
 
-            temp_source_path = temp_flux_output_name
-            if not os.path.exists(temp_source_path):
-                print(f"Warning: generate_image_flux did not create the expected temporary file '{temp_source_path}' for prompt: '{subprompt}'")
-                continue
+        return enhanced or f"{prompt}, {style} style"
+    except Exception:
+        return f"{prompt}, {style} style"
 
-            final_image_name = f"scene_{scene_number}.png"
-            final_image_path = os.path.join(temp_dir, final_image_name)
-            shutil.move(temp_source_path, final_image_path)
-            print(f"Successfully saved image {scene_number} to '{final_image_path}'")
-            generated_image_paths.append(final_image_path)
-        except HTTPException as e:
-            print(f"Error generating image {scene_number} for prompt '{subprompt}': HTTP Error {e.status_code} - {e.detail}")
-        except Exception as e:
-            print(f"An unexpected error occurred generating image {scene_number}: {e}")
-            if os.path.exists(temp_source_path):
-                try:
-                    os.remove(temp_source_path)
-                    print(f"Cleaned up temporary file '{temp_source_path}'.")
-                except Exception as cleanup_e:
-                    print(f"Error during cleanup of '{temp_source_path}': {cleanup_e}")
 
-    return {"image_paths": generated_image_paths}
-    
- 
+headers = {
+    "X-API-Key": PI_API_KEY,
+    "Content-Type": "application/json",
+}
+
+# ───────────────────────────── public service API ─────────────────────────────
+def start_image_task(
+    prompt: str,
+    guidance_scale: float,
+    width: int,
+    height: int,
+    style: str | None,
+) -> dict:
+    """Submits a txt2img job to Pi API and returns the task_id."""
+    body = {
+        "model": MODEL_NAME,
+        "task_type": "txt2img",
+        "input": {
+            "prompt": _enhance_prompt(prompt, style),
+            "width": width,
+            "height": height,
+            "guidance_scale": guidance_scale,
+        },
+    }
+
+    resp = requests.post(
+        "https://api.piapi.ai/api/v1/task", headers=headers, json=body, timeout=60
+    )
+    if not resp.ok:
+        raise HTTPException(resp.status_code, resp.text)
+
+    task_id = resp.json()["data"]["task_id"]
+    return {"task_id": task_id}
+
+def get_image_task_status(task_id: str) -> dict:
+    """Fetch Pi API task status.  
+    • If status is *success* or *completed* → return the full Pi API response JSON  
+    • Otherwise → return a lightweight status object for polling
+    """
+    resp = requests.get(
+        f"https://api.piapi.ai/api/v1/task/{task_id}",
+        headers=headers,
+        timeout=60,
+    )
+
+    if not resp.ok:
+        raise HTTPException(resp.status_code, resp.text)
+
+    api_json = resp.json()          # full response (contains code, data, message)
+    data = api_json.get("data", {})
+    status = data.get("status", "").lower()
+
+    # Pi API sometimes uses "completed" instead of "success"
+    if status in {"success", "completed"}:
+        # give caller the *entire* Pi API payload, exactly as received
+        return api_json
+
+    # anything else → still polling or failed
+    result = {
+        "status": status,           # queued, running, failed, etc.
+        "task_id": task_id,
+    }
+
+    # surface server‑side error message if present
+    if "error" in data and data["error"].get("message"):
+        result["error"] = data["error"]["message"]
+
+    return result
+
