@@ -8,6 +8,7 @@ load_dotenv()
 PI_API_KEY      = os.getenv("PI_API_KEY")
 GOOGLE_API_KEY  = os.getenv("GEMINI_API")
 MODEL_NAME      = "Qubico/flux1-schnell"
+MODEL_NAME_VIDEO = "Qubico/hunyuan"          
 
 genai.configure(api_key=GOOGLE_API_KEY)
 gemini = genai.GenerativeModel(model_name="gemini-2.0-flash")
@@ -62,7 +63,6 @@ def _enhance_prompt(prompt: str, style: str | None) -> str:
         return enhanced or f"{prompt}, {style} style"
     except Exception:
         return f"{prompt}, {style} style"
-
 
 headers = {
     "X-API-Key": PI_API_KEY,
@@ -133,3 +133,65 @@ def get_image_task_status(task_id: str) -> dict:
 
     return result
 
+
+# ─────────────────────────────── video tasks ────────────────────────────────
+def start_video_task(prompt: str) -> dict:
+    """
+    Submit a txt2video job to Pi API and return {"task_id": "..."}.
+    """
+    body = {
+        "model": MODEL_NAME_VIDEO,
+        "task_type": "txt2video",
+        "input": {
+            "prompt": prompt
+            # add "aspect_ratio": "16:9" etc. if you expose it from the UI
+        },
+        "config": {
+            "webhook_config": { "endpoint": "", "secret": "" }
+        }
+    }
+
+    resp = requests.post(
+        "https://api.piapi.ai/api/v1/task",
+        headers=headers,
+        json=body,
+        timeout=60,
+    )
+    if not resp.ok:
+        raise HTTPException(resp.status_code, resp.text)
+
+    task_id = resp.json()["data"]["task_id"]
+    return {"task_id": task_id}
+
+
+def get_video_task_status(task_id: str) -> dict:
+    """
+    Poll a txt2video task and return:
+      • full Pi API JSON when completed
+      • {"status": "pending", "task_id": "..."} while running
+    """
+    resp = requests.get(
+        f"https://api.piapi.ai/api/v1/task/{task_id}",
+        headers=headers,
+        timeout=60,
+    )
+    if not resp.ok:
+        raise HTTPException(resp.status_code, resp.text)
+
+    full_json = resp.json()
+    # Pi returns short shape (queued/pending) OR full shape (completed/failed)
+    if full_json.get("data") is None or "status" not in full_json["data"]:
+        return full_json   # should never happen, but guard anyway
+
+    data   = full_json["data"]
+    status = data["status"].lower()
+
+    if status in {"completed", "success"}:
+        return full_json                      # give caller everything
+
+    if status in {"failed", "error"}:
+        msg = data.get("error", {}).get("message", "Pi video task failed")
+        raise HTTPException(502, f"PiAPI Failure: {msg}")
+
+    # pending / running
+    return {"status": status, "task_id": task_id}

@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel
-from service import start_image_task, get_image_task_status, enhance_prompt
+from service import start_image_task, get_image_task_status, enhance_prompt, start_video_task, get_video_task_status
 
 app = FastAPI()
 
@@ -62,5 +62,31 @@ async def image_task_status(task_id: str):
     """
     try:
         return get_image_task_status(task_id)
+    except HTTPException as e:
+        raise e
+
+
+class VideoGenerationRequest(BaseModel):
+    prompt: str
+
+@app.post("/generate_video/", status_code=status.HTTP_202_ACCEPTED)
+async def generate_video(req: VideoGenerationRequest):
+    """
+    Submit a txt2video job to Pi API. Returns {"task_id": "..."} immediately.
+    """
+    try:
+        return start_video_task(prompt=req.prompt)
+    except HTTPException as e:
+        raise e
+
+
+@app.get("/video_task/{task_id}", status_code=status.HTTP_200_OK)
+async def video_task_status(task_id: str):
+    """
+    Poll a video task. When finished, returns Pi API's full payload
+    (which contains `output.video_url`). Otherwise returns {"status": "..."}.
+    """
+    try:
+        return get_video_task_status(task_id)
     except HTTPException as e:
         raise e
